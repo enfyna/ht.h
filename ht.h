@@ -140,15 +140,16 @@ ht_sv ht_sv_trim(ht_sv sv) {
         l += 1;
     }
     sv.data += l;
+    assert(sv.count - l >= 0 && "String count can never be negative");
     sv.count -= l;
 
     size_t r = 0;
     while (r < sv.count && isspace(sv.data[sv.count - r - 1])) {
         r += 1;
     }
+    assert(sv.count - r >= 0 && "String count can never be negative");
     sv.count -= r;
 
-    assert(sv.count >= 0 && "String count can never be negative");
     return ht_sv_from_buffer(sv.data, sv.count);
 }
 
@@ -208,7 +209,7 @@ ht_worker* ht_init(void) {
     ht_worker* htt = (ht_worker*)malloc(sizeof(ht_worker));
     htt->poll.events = POLLIN;
 
-    htt->buffer = (char*)calloc(sizeof(char), BUFF_SIZE);
+    htt->buffer = (char*)calloc(BUFF_SIZE, sizeof(char));
     htt->buf_size = BUFF_SIZE;
 
     htt->total_read = 0;
@@ -303,12 +304,12 @@ ht_message* ht_get_response(ht_worker* htt) {
     size_t total_body_len = 0;
     size_t body_written = 0;
 
-    ht_message* h = (ht_message*)calloc(sizeof(ht_message), 1);
+    ht_message* h = (ht_message*)calloc(1, sizeof(ht_message));
     h->headers.capacity = 10;
-    h->headers.keys = (ht_sv*)calloc(sizeof(ht_sv), h->headers.capacity);
-    h->headers.vals = (ht_sv*)calloc(sizeof(ht_sv), h->headers.capacity);
+    h->headers.keys = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
+    h->headers.vals = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
 
-    h->all = (char*)calloc(sizeof(char), htt->total_read * 2 + 1);
+    h->all = (char*)calloc(htt->total_read * 2 + 1, sizeof(char));
 
     while (response.count > 0 && section != HT_SEC_END) {
         ht_sv chop = ht_sv_split_once(&response, '\n');
