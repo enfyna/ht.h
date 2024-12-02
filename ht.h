@@ -32,6 +32,7 @@ typedef enum {
     HT_SEC_TITLE,
     HT_SEC_HEADER,
     HT_SEC_BODY,
+    HT_SEC_NO_BODY,
     HT_SEC_END,
 } HTTP_SECTION;
 
@@ -102,8 +103,6 @@ ht_sv ht_sv_from_buffer(const char* buffer, size_t count) {
 
 ht_sv ht_sv_split_once(ht_sv* sv, char delim) {
     size_t i = 0;
-    // assert(sv->count < 1024 && "???");
-    // printf("%.*s : %zu - %zu\n", (int)sv->count, sv->data, i, sv->count);
     while (i < sv->count && sv->data[i] != delim) {
         i += 1;
     }
@@ -116,6 +115,20 @@ ht_sv ht_sv_split_once(ht_sv* sv, char delim) {
     } else {
         sv->count -= i;
         sv->data += i;
+    }
+
+    return result;
+}
+
+ht_sv ht_sv_split_from_left(ht_sv* sv, size_t size) {
+    ht_sv result = ht_sv_from_buffer(sv->data, size);
+
+    if (size < sv->count) {
+        sv->count -= size + 1;
+        sv->data += size + 1;
+    } else {
+        sv->count -= size;
+        sv->data += size;
     }
 
     return result;
@@ -291,9 +304,9 @@ ht_message* ht_get_response(ht_worker* htt) {
     size_t body_written = 0;
 
     ht_message* h = (ht_message*)calloc(sizeof(ht_message), 1);
-    h->headers.keys = (ht_sv*)malloc(sizeof(ht_sv) * 10);
-    h->headers.vals = (ht_sv*)malloc(sizeof(ht_sv) * 10);
     h->headers.capacity = 10;
+    h->headers.keys = (ht_sv*)calloc(sizeof(ht_sv), h->headers.capacity);
+    h->headers.vals = (ht_sv*)calloc(sizeof(ht_sv), h->headers.capacity);
 
     h->all = (char*)calloc(sizeof(char), htt->total_read * 2 + 1);
 
@@ -316,14 +329,16 @@ ht_message* ht_get_response(ht_worker* htt) {
         }
         case HT_SEC_HEADER: {
             chop = ht_sv_trim(chop);
-            if (chop.count == 0) {
-                section = HT_SEC_BODY;
+            if (chop.count <= 1) {
+                if (h->st_code == 400) {
+                    section = HT_SEC_NO_BODY;
+                } else {
+                    section = HT_SEC_BODY;
+                }
                 break;
             }
             ht_sv key = ht_sv_split_once(&chop, ':');
             ht_sv val = ht_sv_trim(chop);
-            assert(h->headers.count <= h->headers.capacity
-                && "We dont have enough capacity to store the header");
             if (h->headers.count + 2 >= h->headers.capacity) {
                 h->headers.capacity *= 2;
                 h->headers.vals = (ht_sv*)realloc(
@@ -346,17 +361,23 @@ ht_message* ht_get_response(ht_worker* htt) {
                 section = HT_SEC_END;
                 break;
             }
-            chop = ht_sv_split_once(&response, '\n');
-            if (chop.count == 0) {
-                chop = ht_sv_split_once(&response, '\n');
-            }
+            chop = ht_sv_split_from_left(&response, len);
+            chop = ht_sv_trim(chop);
             assert(total_body_len <= htt->total_read
                 && "We are writing more data than we got");
-            assert(chop.count - 1 == len
+            assert(chop.count == len
                 && "Chop has less data than it should have");
             memcpy(h->all + body_written, chop.data, len);
             body_written += len;
             break;
+        }
+        case HT_SEC_NO_BODY: {
+            chop = ht_sv_trim(chop);
+            assert(total_body_len <= htt->total_read
+                && "We are writing more data than we got");
+            memcpy(h->all + body_written, chop.data, chop.count);
+            body_written += chop.count;
+            section = HT_SEC_END;
         }
         case HT_SEC_END:
             break;
