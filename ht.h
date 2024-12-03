@@ -3,7 +3,6 @@
 
 #include <ctype.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,21 +10,23 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <netdb.h>
-#include <netinet/in.h>
-#include <sys/poll.h>
+#include <sys/epoll.h>
 #include <unistd.h>
 
 #ifndef HOST
-#define HOST "github.com"
+#define HOST "echo.free.beeceptor.com"
 #endif
 
 #ifndef PORT
 #define PORT 80
 #endif
 
+#ifndef MAX_EPOLL_EVENTS
+#define MAX_EPOLL_EVENTS 4
+#endif
+
 typedef enum {
     HT_GET,
-    HT_POST,
 } HTTP_TYPE;
 
 typedef enum {
@@ -55,7 +56,7 @@ typedef struct {
 } ht_headers;
 
 typedef struct {
-    char* all;
+    const char* all;
     ht_sv version;
     int st_code;
     ht_sv st_message;
@@ -64,26 +65,19 @@ typedef struct {
 } ht_message;
 
 typedef struct {
-    struct pollfd poll;
-
-    char* buffer;
-    size_t buf_size;
-
-    size_t total_read;
-    size_t last_read;
-    bool waiting;
-    bool received;
-    bool working;
-    int polled_for;
-} ht_worker;
+    int items[MAX_EPOLL_EVENTS];
+    int count;
+} ht_active_events;
 
 const char* ht_build_request(HTTP_TYPE type, const char* path);
-ht_worker* ht_init(void);
-bool ht_send(ht_worker* htt, const char* request);
-bool ht_poll(ht_worker* htt, int timeout);
-ht_message* ht_get_response(ht_worker* http);
-void ht_worker_clean(ht_worker* http);
-void ht_worker_free(ht_worker* http);
+
+void ht_init(void);
+int ht_send(const char* request);
+ht_active_events ht_poll(int timeout);
+bool ht_poll_fd(int fd, int timeout);
+void ht_get_response_from_fd(int fd, char** buf, size_t* buf_size);
+ht_message* ht_buffer_to_message(const char* buf, size_t buf_size);
+void ht_close_all(void);
 
 ht_sv ht_sv_trim(ht_sv sv);
 ht_sv ht_sv_split_once(ht_sv* sv, char delim);
@@ -163,8 +157,6 @@ int ht_sv_to_int(ht_sv sv, int base) {
 
 const char* ht_type_to_cstr(HTTP_TYPE type) {
     switch (type) {
-    case HT_POST:
-        return "POST";
     case HT_GET:
         return "GET";
     default:
@@ -201,116 +193,144 @@ const char* ht_build_request(HTTP_TYPE type, const char* resource) {
     return currentBuffer;
 }
 
-ht_worker* ht_init(void) {
+static int __ht_epoll_fd = -1;
+static int __ht_events_ready = 0;
 
-#ifndef BUFF_SIZE
-#define BUFF_SIZE 1024
+static int __ht_listened_files = 0;
+
+#ifndef MAX_FD
+#define MAX_FD 4
 #endif
+static int __ht_available_fd[MAX_FD];
+static int __ht_available_fd_count = 0;
 
-    ht_worker* htt = (ht_worker*)malloc(sizeof(ht_worker));
-    htt->poll.events = POLLIN;
+static struct epoll_event __ht_events_queue[MAX_EPOLL_EVENTS];
 
-    htt->buffer = (char*)calloc(BUFF_SIZE, sizeof(char));
-    htt->buf_size = BUFF_SIZE;
+void ht_init(void) {
+    __ht_epoll_fd = -1;
+    __ht_events_ready = 0;
 
-    htt->total_read = 0;
-    htt->last_read = 0;
-    htt->polled_for = 0;
-    htt->waiting = true;
-    htt->received = false;
-    htt->working = false;
+    __ht_listened_files = 0;
 
-    static struct sockaddr_in serv_addr;
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-
-    struct hostent* host_entry = gethostbyname(HOST);
-    if (host_entry == NULL) {
-        printf("\nERROR:  Host entry error \n");
-        ht_worker_free(htt);
-        return NULL;
+    __ht_epoll_fd = epoll_create1(0);
+    if (__ht_epoll_fd == -1) {
+        printf("Couldn't create epoll instance!\n");
     }
-
-    char* ip_buff = inet_ntoa(*((struct in_addr*)host_entry->h_addr_list[0]));
-
-    if ((htt->poll.fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("\nERROR:  Socket creation error \n");
-        ht_worker_free(htt);
-        return NULL;
-    }
-
-    if (inet_pton(AF_INET, ip_buff, &serv_addr.sin_addr) <= 0) {
-        printf("\nERROR: Invalid address/ Address not supported \n");
-        ht_worker_free(htt);
-        return NULL;
-    }
-
-    int status;
-    if ((status = connect(htt->poll.fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))) < 0) {
-        printf("\nERROR: Connection Failed : %d\n", status);
-        ht_worker_free(htt);
-        return NULL;
-    }
-
-    return htt;
 }
 
-bool ht_send(ht_worker* htt, const char* request) {
-    // send(myc.client_fd, req, strlen(req), 0);
-    ssize_t req_size = strlen(request);
-    ssize_t written = write(htt->poll.fd, request, req_size);
-    assert(written == req_size && "Couldnt write the whole request.");
-    printf("INFO: Request Send!\n");
-    htt->working = true;
-    return true;
-}
-
-bool ht_poll(ht_worker* htt, int timeout) {
-    htt->polled_for++;
-
-    static char tmp[BUFF_SIZE];
-    memset(tmp, 0, BUFF_SIZE);
-
-    if (htt->waiting || htt->last_read > 0) {
-        if (poll(&htt->poll, 1, timeout) > 0) {
-            htt->waiting = false;
-            htt->last_read = read(htt->poll.fd, tmp, BUFF_SIZE - 1);
-            if (htt->last_read > 0) {
-                if (htt->last_read + htt->total_read + 1 > htt->buf_size) {
-                    htt->buf_size *= 2;
-                    htt->buffer = (char*)realloc(htt->buffer, htt->buf_size);
-                }
-                memcpy(htt->buffer + htt->total_read, tmp, htt->last_read + 1);
-                htt->total_read += htt->last_read;
-                htt->buffer[htt->total_read] = '\0';
-            }
-        } else {
-            // printf("Polling...\n");
-            htt->last_read = 0;
-        }
-        return false;
+int ht_send(const char* request) {
+    int fd;
+    if (__ht_available_fd_count > 0) {
+        fd = __ht_available_fd[--__ht_available_fd_count];
     } else {
-        htt->working = false;
-        htt->received = true;
-        return htt->received;
+        static struct sockaddr_in serv_addr;
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(PORT);
+
+        struct hostent* host_entry = gethostbyname(HOST);
+        if (host_entry == NULL) {
+            printf("\nERROR:  Host entry error \n");
+            return -1;
+        }
+
+        if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            printf("\nERROR:  Socket creation error \n");
+            return -1;
+        }
+
+        const char* ip_buff = inet_ntoa(*((struct in_addr*)host_entry->h_addr_list[0]));
+        if (inet_pton(AF_INET, ip_buff, &serv_addr.sin_addr) <= 0) {
+            printf("\nERROR: Invalid address/ Address not supported \n");
+            return -1;
+        }
+
+        int status;
+        if ((status = connect(fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))) < 0) {
+            printf("\nERROR: Connection Failed : %d\n", status);
+            return -1;
+        }
+    }
+
+    struct epoll_event einf[1];
+    memset(&einf[0], 0, sizeof(struct epoll_event));
+    einf[0].events = EPOLLIN;
+    einf[0].data.fd = fd;
+
+    if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_ADD, fd, &einf[0]) == 0) {
+        printf("INFO: Added fd = %d to epoll.\n", fd);
+        __ht_listened_files++;
+    } else {
+        assert(false && "ERROR: Epoll error\n");
+    }
+
+    size_t req_size = strlen(request);
+    size_t written = write(fd, request, req_size);
+    assert(written == req_size && "ERROR: Couldnt write the whole request.");
+    printf("INFO: Sent message to fd = %d with length: %zu\n", fd, written);
+    return fd;
+}
+
+bool ht_poll_fd(int fd, int timeout) {
+    __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, timeout);
+    for (int i = 0; i < __ht_events_ready; i++) {
+        if (__ht_events_queue[i].data.fd == fd) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ht_active_events ht_poll(int timeout) {
+    __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, timeout);
+    ht_active_events res;
+    res.count = __ht_events_ready;
+    for (int i = 0; i < __ht_events_ready; i++) {
+        res.items[i] = __ht_events_queue[i].data.fd;
+    }
+    return res;
+}
+
+void ht_get_response_from_fd(int fd, char** buf, size_t* buf_size) {
+    size_t total_read = 0;
+    while (true) {
+        size_t current_read = read(fd, (*buf) + total_read, *buf_size - total_read);
+        total_read += current_read;
+        if (total_read == *buf_size) {
+            *buf_size *= 2;
+            *buf = realloc(*buf, sizeof(char) * *buf_size);
+        } else {
+            break;
+        }
+    }
+    (*buf)[total_read] = '\0';
+
+    if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
+        __ht_listened_files -= 1;
+        printf("INFO: Removed fd = %d from epoll list.\n", fd);
+    }
+    if (__ht_available_fd_count < MAX_FD) {
+        __ht_available_fd[__ht_available_fd_count++] = fd;
+    } else if (close(fd) == 0) {
+        printf("INFO: Closed fd = %d succesfully.\n", fd);
     }
 }
 
-ht_message* ht_get_response(ht_worker* htt) {
-    assert(htt->polled_for > 0 && "This worker never worked");
-    assert(htt->total_read > 0 && "This worker doesnt show his work");
-    ht_sv response = ht_sv_from_buffer(htt->buffer, htt->total_read);
+ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
+    size_t total_read = strlen(buf);
+    assert(total_read <= buf_size && "Buffer is not null terminated.");
+
+    ht_sv response = ht_sv_from_buffer(buf, strlen(buf));
 
     HTTP_SECTION section = HT_SEC_TITLE;
     size_t total_body_len = 0;
     size_t body_written = 0;
 
     ht_message* h = (ht_message*)calloc(1, sizeof(ht_message));
-    h->headers.capacity = 10;
+    h->headers.capacity = 8;
     h->headers.keys = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
     h->headers.vals = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
 
-    h->all = (char*)calloc(htt->total_read * 2 + 1, sizeof(char));
+    h->all = calloc(total_read, sizeof(char));
 
     while (response.count > 0 && section != HT_SEC_END) {
         ht_sv chop = ht_sv_split_once(&response, '\n');
@@ -321,9 +341,7 @@ ht_message* ht_get_response(ht_worker* htt) {
             ht_sv st = chop;
 
             h->version = ver;
-
             h->st_code = ht_sv_to_int(code, 10);
-
             h->st_message = st;
 
             section = HT_SEC_HEADER;
@@ -365,19 +383,19 @@ ht_message* ht_get_response(ht_worker* htt) {
             }
             chop = ht_sv_split_from_left(&response, len);
             chop = ht_sv_trim(chop);
-            assert(total_body_len <= htt->total_read
+            assert(total_body_len <= total_read
                 && "We are writing more data than we got");
             assert(chop.count == len
                 && "Chop has less data than it should have");
-            memcpy(h->all + body_written, chop.data, len);
+            memcpy((void*)(&h->all[body_written]), chop.data, len);
             body_written += len;
             break;
         }
         case HT_SEC_NO_BODY: {
             chop = ht_sv_trim(chop);
-            assert(total_body_len <= htt->total_read
+            assert(total_body_len <= total_read
                 && "We are writing more data than we got");
-            memcpy(h->all + body_written, chop.data, chop.count);
+            memcpy((void*)(&h->all[body_written]), chop.data, chop.count);
             body_written += chop.count;
             section = HT_SEC_END;
         }
@@ -389,27 +407,34 @@ ht_message* ht_get_response(ht_worker* htt) {
     return h;
 }
 
-void ht_worker_clean(ht_worker* http) {
-    memset(http->buffer, 0, http->buf_size);
-    http->working = false;
-    http->received = false;
-    http->waiting = true;
-    http->total_read = 0;
-    http->last_read = 0;
-}
-
 void ht_free(ht_message* ht) {
     free(ht->headers.keys);
     free(ht->headers.vals);
-    free(ht->all);
+    free((char*)ht->all);
     free(ht);
     ht = NULL;
 }
 
-void ht_worker_free(ht_worker* htt) {
-    close(htt->poll.fd);
-    free(htt->buffer);
-    free(htt);
-    htt = NULL;
+void ht_close_all(void) {
+    while (__ht_listened_files > 0) {
+        __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, -1);
+        for (int i = 0; i < __ht_events_ready; i++) {
+            int fd = __ht_events_queue[i].data.fd;
+            if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
+                __ht_listened_files -= 1;
+                printf("INFO: Removed fd = %d from epoll list.\n", fd);
+            }
+            if (close(fd) == 0) {
+                printf("INFO: Closed fd = %d succesfully.\n", fd);
+            }
+        }
+    }
+    for (int i = 0; i < __ht_available_fd_count; i++) {
+        int fd = __ht_available_fd[i];
+        if (close(fd) == 0) {
+            printf("INFO: Closed fd = %d succesfully.\n", fd);
+        }
+    }
 }
+
 #endif // HT_IMPLEMENTATION
