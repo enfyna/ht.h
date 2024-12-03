@@ -189,6 +189,7 @@ const char* ht_build_request(HTTP_TYPE type, const char* resource) {
     snprintf(currentBuffer, MAX_REQUEST_BUFFER_LENGTH,
         "%s %s HTTP/1.1\r\n"
         "Host: " HOST "\r\n"
+        "Accept-Encoding: Chunked\r\n"
         "\r\n"
         "\r\n",
         ht_type_to_cstr(type), resource);
