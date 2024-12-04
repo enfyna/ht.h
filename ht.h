@@ -26,6 +26,7 @@
 
 typedef enum {
     HT_GET,
+    HT_POST,
 } HTTP_TYPE;
 
 typedef enum {
@@ -68,7 +69,6 @@ typedef struct {
     int count;
 } ht_active_events;
 
-const char* ht_build_request(HTTP_TYPE type, const char* path);
 #ifndef MAX_CUSTOM_HEADER_LENGTH
 #define MAX_CUSTOM_HEADER_LENGTH 1024
 #endif
@@ -79,6 +79,7 @@ typedef struct {
     char custom_headers[MAX_CUSTOM_HEADER_LENGTH];
 } ht_snapshot;
 
+const char* ht_build_request(HTTP_TYPE type, const char* path, const char* data);
 
 int ht_init(void);
 int ht_send(const char* request);
@@ -86,7 +87,10 @@ ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
 char* ht_get_response_from_fd(int fd);
 ht_message* ht_buffer_to_message(const char* buf, size_t buf_size);
+void ht_add_custom_header(const char* key, const char* value);
 void ht_close_all(void);
+void ht_free(ht_message* ht);
+
 ht_snapshot ht_snap(void);
 void ht_restore(ht_snapshot snap);
 
@@ -167,16 +171,15 @@ int ht_sv_to_int(ht_sv sv, int base) {
     return len;
 }
 
-const char* ht_type_to_cstr(HTTP_TYPE type) {
-    switch (type) {
-    case HT_GET:
-        return "GET";
-    default:
-        return NULL;
-    }
+static char __ht_custom_headers[MAX_CUSTOM_HEADER_LENGTH];
+void ht_add_custom_header(const char* key, const char* value) {
+    strcat(__ht_custom_headers, key);
+    strcat(__ht_custom_headers, ": ");
+    strcat(__ht_custom_headers, value);
+    strcat(__ht_custom_headers, "\r\n");
 }
 
-const char* ht_build_request(HTTP_TYPE type, const char* resource) {
+const char* ht_build_request(HTTP_TYPE type, const char* resource, const char* data) {
 #ifndef MAX_REQUEST_BUFFERS
 #define MAX_REQUEST_BUFFERS 4
 #endif
@@ -190,13 +193,33 @@ const char* ht_build_request(HTTP_TYPE type, const char* resource) {
     char* currentBuffer = buffers[index];
     memset(currentBuffer, 0, MAX_REQUEST_BUFFER_LENGTH);
 
-    snprintf(currentBuffer, MAX_REQUEST_BUFFER_LENGTH,
-        "%s %s HTTP/1.1\r\n"
-        "Host: " HOST "\r\n"
-        "Accept-Encoding: Chunked\r\n"
-        "\r\n"
-        "\r\n",
-        ht_type_to_cstr(type), resource);
+    switch (type) {
+    case HT_GET:
+        snprintf(currentBuffer, MAX_REQUEST_BUFFER_LENGTH,
+            "GET %s HTTP/1.1\r\n"
+            "Host: " HOST "\r\n"
+            "%s"
+            "Accept-Encoding: Chunked\r\n"
+            "\r\n"
+            "\r\n",
+            resource, __ht_custom_headers);
+        break;
+    case HT_POST:
+        snprintf(currentBuffer, MAX_REQUEST_BUFFER_LENGTH,
+            "POST %s HTTP/1.1\r\n"
+            "Host: " HOST "\r\n"
+            "%s"
+            "Accept-Encoding: Chunked\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: %lu\r\n"
+            "\r\n"
+            "%s"
+            "\r\n",
+            resource, __ht_custom_headers, strlen(data), data);
+        break;
+    default:
+        return NULL;
+    }
 
     if (++index >= MAX_REQUEST_BUFFERS) {
         index = 0;
@@ -400,7 +423,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
         case HT_SEC_HEADER: {
             chop = ht_sv_trim(chop);
             if (chop.count <= 1) {
-                if (h->st_code == 400) {
+                if (h->st_code == 400 || h->st_code == 500) {
                     section = HT_SEC_NO_BODY;
                 } else {
                     section = HT_SEC_BODY;
@@ -471,18 +494,24 @@ void ht_close_all(void) {
         for (int i = 0; i < __ht_events_ready; i++) {
             int fd = __ht_events_queue[i].data.fd;
             if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
-                __ht_listened_files -= 1;
                 printf("INFO: Removed fd = %d from epoll list.\n", fd);
+            } else {
+                printf("ERROR: Removing fd = %d from epoll list.\n", fd);
             }
             if (close(fd) == 0) {
                 printf("INFO: Closed fd = %d succesfully.\n", fd);
+            } else {
+                printf("ERROR: Couldnt close fd = %d.\n", fd);
             }
+            __ht_listened_files--;
         }
     }
     for (int i = 0; i < __ht_available_fd_count; i++) {
         int fd = __ht_available_fd[i];
         if (close(fd) == 0) {
             printf("INFO: Closed fd = %d succesfully.\n", fd);
+        } else {
+            printf("ERROR: Couldnt close fd = %d.\n", fd);
         }
     }
 }
