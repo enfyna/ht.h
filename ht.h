@@ -1,7 +1,6 @@
 #ifndef HT_H_
 #define HT_H_
 
-#include <ctype.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +70,9 @@ typedef struct {
 
 const char* ht_build_request(HTTP_TYPE type, const char* path);
 
-void ht_init(void);
+int ht_init(void);
+int ht_get_listened_fd_count(void);
+void ht_restore(int epfd, int listened_file_count);
 int ht_send(const char* request);
 ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
@@ -85,8 +86,9 @@ ht_sv ht_sv_from_buffer(const char* buffer, size_t count);
 int ht_sv_to_int(ht_sv sv, int base);
 #endif // HT_H_
 
-#define HT_IMPLEMENTATION
 #ifdef HT_IMPLEMENTATION
+
+#include <ctype.h>
 
 ht_sv ht_sv_from_buffer(const char* buffer, size_t count) {
     ht_sv sv;
@@ -206,7 +208,7 @@ static int __ht_available_fd_count = 0;
 
 static struct epoll_event __ht_events_queue[MAX_EPOLL_EVENTS];
 
-void ht_init(void) {
+int ht_init(void) {
     __ht_epoll_fd = -1;
     __ht_events_ready = 0;
 
@@ -214,8 +216,21 @@ void ht_init(void) {
 
     __ht_epoll_fd = epoll_create1(0);
     if (__ht_epoll_fd == -1) {
-        printf("Couldn't create epoll instance!\n");
+        printf("ERROR: Couldn't create epoll instance!\n");
     }
+    printf("INFO: Created epoll instance with fd = %d !\n", __ht_epoll_fd);
+    return __ht_epoll_fd;
+}
+
+int ht_get_listened_fd_count(void){
+    return __ht_listened_files;
+}
+
+void ht_restore(int epfd, int listened_file_count){
+    __ht_epoll_fd = epfd;
+    __ht_listened_files = listened_file_count;
+    printf("INFO: __ht_epoll_fd = %d\n", __ht_epoll_fd);
+    printf("INFO: __ht_listened_files = %d\n", __ht_listened_files);
 }
 
 int ht_send(const char* request) {
@@ -260,7 +275,9 @@ int ht_send(const char* request) {
         printf("INFO: Added fd = %d to epoll.\n", fd);
         __ht_listened_files++;
     } else {
-        assert(false && "ERROR: Epoll error\n");
+        printf("ERROR: epfd = %d\n", __ht_epoll_fd);
+        printf("ERROR: fd = %d\n", fd);
+        assert(false && "Couldnt add fd to epoll");
     }
 
     size_t req_size = strlen(request);
