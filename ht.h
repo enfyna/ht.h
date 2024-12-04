@@ -76,7 +76,7 @@ void ht_restore(int epfd, int listened_file_count);
 int ht_send(const char* request);
 ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
-void ht_get_response_from_fd(int fd, char** buf, size_t* buf_size);
+char* ht_get_response_from_fd(int fd);
 ht_message* ht_buffer_to_message(const char* buf, size_t buf_size);
 void ht_close_all(void);
 
@@ -222,11 +222,11 @@ int ht_init(void) {
     return __ht_epoll_fd;
 }
 
-int ht_get_listened_fd_count(void){
+int ht_get_listened_fd_count(void) {
     return __ht_listened_files;
 }
 
-void ht_restore(int epfd, int listened_file_count){
+void ht_restore(int epfd, int listened_file_count) {
     __ht_epoll_fd = epfd;
     __ht_listened_files = listened_file_count;
     printf("INFO: __ht_epoll_fd = %d\n", __ht_epoll_fd);
@@ -318,29 +318,34 @@ ht_active_events ht_poll(int timeout) {
     return res;
 }
 
-void ht_get_response_from_fd(int fd, char** buf, size_t* buf_size) {
+char* ht_get_response_from_fd(int fd) {
     size_t total_read = 0;
+    size_t buf_size = 1024;
+    char* buf = malloc(buf_size);
     while (true) {
-        size_t current_read = read(fd, (*buf) + total_read, *buf_size - total_read);
+        size_t current_read = read(fd, buf + total_read, buf_size - total_read);
         total_read += current_read;
-        if (total_read == *buf_size) {
-            *buf_size *= 2;
-            *buf = realloc(*buf, sizeof(char) * *buf_size);
+        if (total_read == buf_size) {
+            buf_size *= 2;
+            buf = realloc(buf, sizeof(char) * buf_size);
         } else {
             break;
         }
     }
-    (*buf)[total_read] = '\0';
+    buf[total_read] = '\0';
 
     if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
         __ht_listened_files -= 1;
         printf("INFO: Removed fd = %d from epoll list.\n", fd);
     }
+
     if (__ht_available_fd_count < MAX_FD) {
         __ht_available_fd[__ht_available_fd_count++] = fd;
     } else if (close(fd) == 0) {
         printf("INFO: Closed fd = %d succesfully.\n", fd);
     }
+
+    return buf;
 }
 
 ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
