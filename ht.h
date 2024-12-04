@@ -69,16 +69,26 @@ typedef struct {
 } ht_active_events;
 
 const char* ht_build_request(HTTP_TYPE type, const char* path);
+#ifndef MAX_CUSTOM_HEADER_LENGTH
+#define MAX_CUSTOM_HEADER_LENGTH 1024
+#endif
+
+typedef struct {
+    int epfd;
+    int listened_file_count;
+    char custom_headers[MAX_CUSTOM_HEADER_LENGTH];
+} ht_snapshot;
+
 
 int ht_init(void);
-int ht_get_listened_fd_count(void);
-void ht_restore(int epfd, int listened_file_count);
 int ht_send(const char* request);
 ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
 char* ht_get_response_from_fd(int fd);
 ht_message* ht_buffer_to_message(const char* buf, size_t buf_size);
 void ht_close_all(void);
+ht_snapshot ht_snap(void);
+void ht_restore(ht_snapshot snap);
 
 ht_sv ht_sv_trim(ht_sv sv);
 ht_sv ht_sv_split_once(ht_sv* sv, char delim);
@@ -222,15 +232,22 @@ int ht_init(void) {
     return __ht_epoll_fd;
 }
 
-int ht_get_listened_fd_count(void) {
-    return __ht_listened_files;
-}
-
-void ht_restore(int epfd, int listened_file_count) {
-    __ht_epoll_fd = epfd;
-    __ht_listened_files = listened_file_count;
+void ht_restore(ht_snapshot snap) {
+    __ht_epoll_fd = snap.epfd;
+    __ht_listened_files = snap.listened_file_count;
+    memcpy(__ht_custom_headers, snap.custom_headers, MAX_CUSTOM_HEADER_LENGTH);
     printf("INFO: __ht_epoll_fd = %d\n", __ht_epoll_fd);
     printf("INFO: __ht_listened_files = %d\n", __ht_listened_files);
+    printf("INFO: __ht_custom_headers = %s\n", __ht_custom_headers);
+}
+
+ht_snapshot ht_snap(void) {
+    ht_snapshot snap = {
+        .epfd = __ht_epoll_fd,
+        .listened_file_count = __ht_listened_files,
+    };
+    memcpy(snap.custom_headers, __ht_custom_headers, MAX_CUSTOM_HEADER_LENGTH);
+    return snap;
 }
 
 int ht_send(const char* request) {
