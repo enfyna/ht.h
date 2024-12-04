@@ -237,6 +237,17 @@ int ht_send(const char* request) {
     int fd;
     if (__ht_available_fd_count > 0) {
         fd = __ht_available_fd[--__ht_available_fd_count];
+        int error = 0;
+        socklen_t len = sizeof(error);
+        int retval = getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
+        if (retval != 0) {
+            fprintf(stderr, "ERROR: Socket error retval: %s\n", strerror(retval));
+            return -1;
+        }
+        if (error != 0) {
+            fprintf(stderr, "ERROR: Socket error error: %s\n", strerror(error));
+            return -1;
+        }
     } else {
         static struct sockaddr_in serv_addr;
         serv_addr.sin_family = AF_INET;
