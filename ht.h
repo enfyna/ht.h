@@ -212,6 +212,8 @@ ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t)
     t = ht_sv_trim(t);
     memcpy(&st.version, v.data, v.count);
     memcpy(&st.status, t.data, t.count);
+    st.version[v.count] = '\0';
+    st.status[t.count] = '\0';
     st.code = ht_sv_to_int(c, 10);
     return st;
 }
