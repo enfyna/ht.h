@@ -32,8 +32,16 @@
 #define MAX_HTTP_BODY_LEN (8 * 1024)
 #endif
 
+#ifndef MAX_CUSTOM_HEADER_LENGTH
+#define MAX_CUSTOM_HEADER_LENGTH 1024
+#endif
+
 #ifndef MAX_EPOLL_EVENTS
 #define MAX_EPOLL_EVENTS 4
+#endif
+
+#ifndef MAX_FD
+#define MAX_FD 4
 #endif
 
 typedef enum {
@@ -54,11 +62,6 @@ typedef enum {
     HT_ERR_HOST,
     HT_ERR_SOCKET,
 } HT_ERR;
-
-typedef struct {
-    const char* data;
-    size_t count;
-} ht_sv;
 
 typedef struct {
     char data[MAX_HEADER_KEY_LEN];
@@ -88,22 +91,12 @@ typedef struct {
     const char body[MAX_HTTP_BODY_LEN];
     ht_Status_Line status;
     ht_headers headers;
-} ht_message;
+} ht_Message;
 
 typedef struct {
     int items[MAX_EPOLL_EVENTS];
     int count;
 } ht_active_events;
-
-#ifndef MAX_CUSTOM_HEADER_LENGTH
-#define MAX_CUSTOM_HEADER_LENGTH 1024
-#endif
-
-typedef struct {
-    int epfd;
-    int listened_file_count;
-    char custom_headers[MAX_CUSTOM_HEADER_LENGTH];
-} ht_snapshot;
 
 const char* ht_build_request_data(HTTP_TYPE type, const char* path, const char* data);
 #define ht_build_request(type, path) ht_build_request_data(type, path, NULL)
@@ -113,24 +106,31 @@ int ht_send(const char* request);
 ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
 char* ht_get_response_from_fd(int fd);
-ht_message* ht_buffer_to_message(const char* buf, size_t buf_size);
+ht_Message* ht_message(const char* buf, size_t buf_size);
 void ht_add_custom_header(const char* key, const char* value);
 void ht_close_all(void);
-void ht_free(ht_message* ht);
+void ht_free(ht_Message* ht);
 
-ht_snapshot ht_snap(void);
-void ht_restore(ht_snapshot snap);
+typedef struct {
+    int epfd;
+    int listened_file_count;
+    int available_fd_count;
+    int available_fds[MAX_FD];
+    char custom_headers[MAX_CUSTOM_HEADER_LENGTH];
+} ht_Snapshot;
 
-ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t);
-ht_sv ht_sv_trim(ht_sv sv);
-ht_sv ht_sv_split_once(ht_sv* sv, char delim);
-ht_sv ht_sv_from_buffer(const char* buffer, size_t count);
-int ht_sv_to_int(ht_sv sv, int base);
+ht_Snapshot ht_snapshot(void);
+void ht_restore(ht_Snapshot snapshot);
 #endif // HT_H_
 
 #ifdef HT_IMPLEMENTATION
 
 #include <ctype.h>
+
+typedef struct {
+    const char* data;
+    size_t count;
+} ht_sv;
 
 ht_sv ht_sv_from_buffer(const char* buffer, size_t count)
 {
@@ -282,9 +282,6 @@ static int __ht_events_ready = 0;
 
 static int __ht_listened_files = 0;
 
-#ifndef MAX_FD
-#define MAX_FD 4
-#endif
 static int __ht_available_fd[MAX_FD];
 static int __ht_available_fd_count = 0;
 
@@ -305,23 +302,35 @@ int ht_init(void)
     return __ht_epoll_fd;
 }
 
-void ht_restore(ht_snapshot snap)
+void ht_restore(ht_Snapshot snap)
 {
+    printf("INFO: Restoring ht...\n");
     __ht_epoll_fd = snap.epfd;
     __ht_listened_files = snap.listened_file_count;
     memcpy(__ht_custom_headers, snap.custom_headers, MAX_CUSTOM_HEADER_LENGTH);
+    __ht_available_fd_count = snap.available_fd_count;
+    memcpy(__ht_available_fd, snap.available_fds, snap.available_fd_count);
     printf("INFO: __ht_epoll_fd = %d\n", __ht_epoll_fd);
     printf("INFO: __ht_listened_files = %d\n", __ht_listened_files);
     printf("INFO: __ht_custom_headers = %s\n", __ht_custom_headers);
+    printf("INFO: __ht_available_fd_count = %d\n", __ht_available_fd_count);
+    printf("INFO: __ht_available_fd = ");
+    for (int i = 0; i < __ht_available_fd_count; i++) {
+        printf("%d, ", __ht_available_fd[i]);
+    }
+    printf("\n");
+    printf("INFO: Restored succesfully.\n");
 }
 
-ht_snapshot ht_snap(void)
+ht_Snapshot ht_snapshot(void)
 {
-    ht_snapshot snap = {
+    ht_Snapshot snap = {
         .epfd = __ht_epoll_fd,
         .listened_file_count = __ht_listened_files,
+        .available_fd_count = __ht_available_fd_count,
     };
     memcpy(snap.custom_headers, __ht_custom_headers, MAX_CUSTOM_HEADER_LENGTH);
+    memcpy(snap.available_fds, __ht_available_fd, MAX_FD);
     return snap;
 }
 
@@ -444,7 +453,7 @@ char* ht_get_response_from_fd(int fd)
     return buf;
 }
 
-ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
+ht_Message* ht_message(const char* buf, size_t buf_size)
 {
     size_t total_read = strlen(buf);
     assert(total_read <= buf_size && "Buffer is not null terminated.");
@@ -456,7 +465,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
     size_t total_body_len = 0;
     size_t body_written = 0;
 
-    ht_message* h = (ht_message*)calloc(1, sizeof(ht_message));
+    ht_Message* h = (ht_Message*)calloc(1, sizeof(ht_Message));
     h->headers.capacity = 8;
     h->headers.keys = (ht_Header_Key*)calloc(h->headers.capacity, sizeof(ht_Header_Key));
     h->headers.vals = (ht_Header_Value*)calloc(h->headers.capacity, sizeof(ht_Header_Value));
@@ -535,7 +544,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
     return h;
 }
 
-void ht_free(ht_message* ht)
+void ht_free(ht_Message* ht)
 {
     free(ht->headers.keys);
     free(ht->headers.vals);
