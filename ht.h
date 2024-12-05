@@ -55,11 +55,18 @@ typedef struct {
     int count;
 } ht_headers;
 
+#define MAX_VERSION_LEN 9
+#define MAX_STATUS_TEXT_LEN 32
+
+typedef struct {
+    char status[MAX_STATUS_TEXT_LEN];
+    char version[MAX_VERSION_LEN];
+    int code;
+} ht_Status_Line;
+
 typedef struct {
     const char* all;
-    ht_sv version;
-    int st_code;
-    ht_sv st_message;
+    ht_Status_Line status;
     ht_headers headers;
     ht_sv body;
 } ht_message;
@@ -79,7 +86,8 @@ typedef struct {
     char custom_headers[MAX_CUSTOM_HEADER_LENGTH];
 } ht_snapshot;
 
-const char* ht_build_request(HTTP_TYPE type, const char* path, const char* data);
+const char* ht_build_request_data(HTTP_TYPE type, const char* path, const char* data);
+#define ht_build_request(...) ht_build_request_data(__VA_ARGS__, NULL);
 
 int ht_init(void);
 int ht_send(const char* request);
@@ -94,6 +102,7 @@ void ht_free(ht_message* ht);
 ht_snapshot ht_snap(void);
 void ht_restore(ht_snapshot snap);
 
+ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t);
 ht_sv ht_sv_trim(ht_sv sv);
 ht_sv ht_sv_split_once(ht_sv* sv, char delim);
 ht_sv ht_sv_from_buffer(const char* buffer, size_t count);
@@ -104,14 +113,16 @@ int ht_sv_to_int(ht_sv sv, int base);
 
 #include <ctype.h>
 
-ht_sv ht_sv_from_buffer(const char* buffer, size_t count) {
+ht_sv ht_sv_from_buffer(const char* buffer, size_t count)
+{
     ht_sv sv;
     sv.data = buffer;
     sv.count = count;
     return sv;
 }
 
-ht_sv ht_sv_split_once(ht_sv* sv, char delim) {
+ht_sv ht_sv_split_once(ht_sv* sv, char delim)
+{
     size_t i = 0;
     while (i < sv->count && sv->data[i] != delim) {
         i += 1;
@@ -130,7 +141,8 @@ ht_sv ht_sv_split_once(ht_sv* sv, char delim) {
     return result;
 }
 
-ht_sv ht_sv_split_from_left(ht_sv* sv, size_t size) {
+ht_sv ht_sv_split_from_left(ht_sv* sv, size_t size)
+{
     ht_sv result = ht_sv_from_buffer(sv->data, size);
 
     if (size < sv->count) {
@@ -144,7 +156,8 @@ ht_sv ht_sv_split_from_left(ht_sv* sv, size_t size) {
     return result;
 }
 
-ht_sv ht_sv_trim(ht_sv sv) {
+ht_sv ht_sv_trim(ht_sv sv)
+{
     size_t l = 0;
     while (l < sv.count && isspace(sv.data[l])) {
         l += 1;
@@ -163,7 +176,8 @@ ht_sv ht_sv_trim(ht_sv sv) {
     return ht_sv_from_buffer(sv.data, sv.count);
 }
 
-int ht_sv_to_int(ht_sv sv, int base) {
+int ht_sv_to_int(ht_sv sv, int base)
+{
     char dec[sv.count + 1];
     strncpy(dec, sv.data, sv.count);
     dec[sv.count] = '\0';
@@ -171,15 +185,30 @@ int ht_sv_to_int(ht_sv sv, int base) {
     return len;
 }
 
+ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t){
+    ht_Status_Line st;
+    v = ht_sv_trim(v);
+    c = ht_sv_trim(c);
+    t = ht_sv_trim(t);
+    memcpy(&st.version, v.data, v.count);
+    memcpy(&st.status, t.data, t.count);
+    st.code = ht_sv_to_int(c, 10);
+    return st;
+}
+
 static char __ht_custom_headers[MAX_CUSTOM_HEADER_LENGTH];
-void ht_add_custom_header(const char* key, const char* value) {
+void ht_add_custom_header(const char* key, const char* value)
+{
+    assert(strlen(key) + strlen(value) + 5 < MAX_CUSTOM_HEADER_LENGTH
+        && "Custom header length is too long!");
     strcat(__ht_custom_headers, key);
     strcat(__ht_custom_headers, ": ");
     strcat(__ht_custom_headers, value);
     strcat(__ht_custom_headers, "\r\n");
 }
 
-const char* ht_build_request(HTTP_TYPE type, const char* resource, const char* data) {
+const char* ht_build_request_data(HTTP_TYPE type, const char* resource, const char* data)
+{
 #ifndef MAX_REQUEST_BUFFERS
 #define MAX_REQUEST_BUFFERS 4
 #endif
@@ -241,7 +270,8 @@ static int __ht_available_fd_count = 0;
 
 static struct epoll_event __ht_events_queue[MAX_EPOLL_EVENTS];
 
-int ht_init(void) {
+int ht_init(void)
+{
     __ht_epoll_fd = -1;
     __ht_events_ready = 0;
 
@@ -255,7 +285,8 @@ int ht_init(void) {
     return __ht_epoll_fd;
 }
 
-void ht_restore(ht_snapshot snap) {
+void ht_restore(ht_snapshot snap)
+{
     __ht_epoll_fd = snap.epfd;
     __ht_listened_files = snap.listened_file_count;
     memcpy(__ht_custom_headers, snap.custom_headers, MAX_CUSTOM_HEADER_LENGTH);
@@ -264,7 +295,8 @@ void ht_restore(ht_snapshot snap) {
     printf("INFO: __ht_custom_headers = %s\n", __ht_custom_headers);
 }
 
-ht_snapshot ht_snap(void) {
+ht_snapshot ht_snap(void)
+{
     ht_snapshot snap = {
         .epfd = __ht_epoll_fd,
         .listened_file_count = __ht_listened_files,
@@ -273,7 +305,8 @@ ht_snapshot ht_snap(void) {
     return snap;
 }
 
-int ht_send(const char* request) {
+int ht_send(const char* request)
+{
     int fd;
     if (__ht_available_fd_count > 0) {
         fd = __ht_available_fd[--__ht_available_fd_count];
@@ -338,7 +371,8 @@ int ht_send(const char* request) {
     return fd;
 }
 
-bool ht_poll_fd(int fd, int timeout) {
+bool ht_poll_fd(int fd, int timeout)
+{
     __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, timeout);
     for (int i = 0; i < __ht_events_ready; i++) {
         if (__ht_events_queue[i].data.fd == fd) {
@@ -348,7 +382,8 @@ bool ht_poll_fd(int fd, int timeout) {
     return false;
 }
 
-ht_active_events ht_poll(int timeout) {
+ht_active_events ht_poll(int timeout)
+{
     __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, timeout);
     ht_active_events res;
     res.count = __ht_events_ready;
@@ -358,7 +393,8 @@ ht_active_events ht_poll(int timeout) {
     return res;
 }
 
-char* ht_get_response_from_fd(int fd) {
+char* ht_get_response_from_fd(int fd)
+{
     size_t total_read = 0;
     size_t buf_size = 1024;
     char* buf = malloc(buf_size);
@@ -388,7 +424,8 @@ char* ht_get_response_from_fd(int fd) {
     return buf;
 }
 
-ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
+ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
+{
     size_t total_read = strlen(buf);
     assert(total_read <= buf_size && "Buffer is not null terminated.");
 
@@ -413,9 +450,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
             ht_sv code = ht_sv_split_once(&chop, ' ');
             ht_sv st = chop;
 
-            h->version = ver;
-            h->st_code = ht_sv_to_int(code, 10);
-            h->st_message = st;
+            h->status = ht_status_line(ver, code, st);
 
             section = HT_SEC_HEADER;
             break;
@@ -423,7 +458,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
         case HT_SEC_HEADER: {
             chop = ht_sv_trim(chop);
             if (chop.count <= 1) {
-                if (h->st_code == 400 || h->st_code == 500) {
+                if (h->status.code == 400 || h->status.code == 500) {
                     section = HT_SEC_NO_BODY;
                 } else {
                     section = HT_SEC_BODY;
@@ -480,7 +515,8 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size) {
     return h;
 }
 
-void ht_free(ht_message* ht) {
+void ht_free(ht_message* ht)
+{
     free(ht->headers.keys);
     free(ht->headers.vals);
     free((char*)ht->all);
@@ -488,7 +524,8 @@ void ht_free(ht_message* ht) {
     ht = NULL;
 }
 
-void ht_close_all(void) {
+void ht_close_all(void)
+{
     while (__ht_listened_files > 0) {
         __ht_events_ready = epoll_wait(__ht_epoll_fd, __ht_events_queue, MAX_EPOLL_EVENTS, -1);
         for (int i = 0; i < __ht_events_ready; i++) {
