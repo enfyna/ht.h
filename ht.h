@@ -24,6 +24,10 @@
 #define MAX_EPOLL_EVENTS 4
 #endif
 
+#ifndef MAX_HTTP_BODY_LEN
+#define MAX_HTTP_BODY_LEN (8 * 1024)
+#endif
+
 typedef enum {
     HT_GET,
     HT_POST,
@@ -49,8 +53,16 @@ typedef struct {
 } ht_sv;
 
 typedef struct {
-    ht_sv* keys;
-    ht_sv* vals;
+    char data[32];
+} ht_Header_Key;
+
+typedef struct {
+    char data[32];
+} ht_Header_Value;
+
+typedef struct {
+    ht_Header_Key* keys;
+    ht_Header_Value* vals;
     int capacity;
     int count;
 } ht_headers;
@@ -65,10 +77,9 @@ typedef struct {
 } ht_Status_Line;
 
 typedef struct {
-    const char* all;
+    const char body[MAX_HTTP_BODY_LEN];
     ht_Status_Line status;
     ht_headers headers;
-    ht_sv body;
 } ht_message;
 
 typedef struct {
@@ -87,7 +98,7 @@ typedef struct {
 } ht_snapshot;
 
 const char* ht_build_request_data(HTTP_TYPE type, const char* path, const char* data);
-#define ht_build_request(...) ht_build_request_data(__VA_ARGS__, NULL);
+#define ht_build_request(type, path) ht_build_request_data(type, path, NULL)
 
 int ht_init(void);
 int ht_send(const char* request);
@@ -185,7 +196,8 @@ int ht_sv_to_int(ht_sv sv, int base)
     return len;
 }
 
-ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t){
+ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t)
+{
     ht_Status_Line st;
     v = ht_sv_trim(v);
     c = ht_sv_trim(c);
@@ -428,6 +440,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
 {
     size_t total_read = strlen(buf);
     assert(total_read <= buf_size && "Buffer is not null terminated.");
+    assert(buf_size < MAX_HTTP_BODY_LEN && "HTTP message is too long.");
 
     ht_sv response = ht_sv_from_buffer(buf, strlen(buf));
 
@@ -437,10 +450,8 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
 
     ht_message* h = (ht_message*)calloc(1, sizeof(ht_message));
     h->headers.capacity = 8;
-    h->headers.keys = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
-    h->headers.vals = (ht_sv*)calloc(h->headers.capacity, sizeof(ht_sv));
-
-    h->all = calloc(total_read, sizeof(char));
+    h->headers.keys = (ht_Header_Key*)calloc(h->headers.capacity, sizeof(ht_sv));
+    h->headers.vals = (ht_Header_Value*)calloc(h->headers.capacity, sizeof(ht_sv));
 
     while (response.count > 0 && section != HT_SEC_END) {
         ht_sv chop = ht_sv_split_once(&response, '\n');
@@ -469,13 +480,13 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
             ht_sv val = ht_sv_trim(chop);
             if (h->headers.count + 2 >= h->headers.capacity) {
                 h->headers.capacity *= 2;
-                h->headers.vals = (ht_sv*)realloc(
+                h->headers.vals = (ht_Header_Value*)realloc(
                     h->headers.vals, sizeof(ht_sv) * h->headers.capacity);
-                h->headers.keys = (ht_sv*)realloc(
+                h->headers.keys = (ht_Header_Key*)realloc(
                     h->headers.keys, sizeof(ht_sv) * h->headers.capacity);
             }
-            h->headers.keys[h->headers.count] = key;
-            h->headers.vals[h->headers.count] = val;
+            memcpy(&h->headers.keys[h->headers.count].data, key.data, key.count);
+            memcpy(&h->headers.vals[h->headers.count].data, val.data, val.count);
             h->headers.count++;
             break;
         }
@@ -495,7 +506,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
                 && "We are writing more data than we got");
             assert(chop.count == len
                 && "Chop has less data than it should have");
-            memcpy((void*)(&h->all[body_written]), chop.data, len);
+            memcpy((void*)(&h->body[body_written]), chop.data, len);
             body_written += len;
             break;
         }
@@ -503,7 +514,7 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
             chop = ht_sv_trim(chop);
             assert(total_body_len <= total_read
                 && "We are writing more data than we got");
-            memcpy((void*)(&h->all[body_written]), chop.data, chop.count);
+            memcpy((void*)(&h->body[body_written]), chop.data, chop.count);
             body_written += chop.count;
             section = HT_SEC_END;
         }
@@ -511,7 +522,6 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
             break;
         }
     }
-    h->body = ht_sv_from_buffer(h->all, body_written);
     return h;
 }
 
@@ -519,7 +529,6 @@ void ht_free(ht_message* ht)
 {
     free(ht->headers.keys);
     free(ht->headers.vals);
-    free((char*)ht->all);
     free(ht);
     ht = NULL;
 }
