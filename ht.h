@@ -20,12 +20,20 @@
 #define PORT 80
 #endif
 
-#ifndef MAX_EPOLL_EVENTS
-#define MAX_EPOLL_EVENTS 4
+#ifndef MAX_HEADER_KEY_LEN
+#define MAX_HEADER_KEY_LEN 32
+#endif
+
+#ifndef MAX_HEADER_VAL_LEN
+#define MAX_HEADER_VAL_LEN 128
 #endif
 
 #ifndef MAX_HTTP_BODY_LEN
 #define MAX_HTTP_BODY_LEN (8 * 1024)
+#endif
+
+#ifndef MAX_EPOLL_EVENTS
+#define MAX_EPOLL_EVENTS 4
 #endif
 
 typedef enum {
@@ -53,11 +61,11 @@ typedef struct {
 } ht_sv;
 
 typedef struct {
-    char data[32];
+    char data[MAX_HEADER_KEY_LEN];
 } ht_Header_Key;
 
 typedef struct {
-    char data[32];
+    char data[MAX_HEADER_VAL_LEN];
 } ht_Header_Value;
 
 typedef struct {
@@ -450,8 +458,8 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
 
     ht_message* h = (ht_message*)calloc(1, sizeof(ht_message));
     h->headers.capacity = 8;
-    h->headers.keys = (ht_Header_Key*)calloc(h->headers.capacity, sizeof(ht_sv));
-    h->headers.vals = (ht_Header_Value*)calloc(h->headers.capacity, sizeof(ht_sv));
+    h->headers.keys = (ht_Header_Key*)calloc(h->headers.capacity, sizeof(ht_Header_Key));
+    h->headers.vals = (ht_Header_Value*)calloc(h->headers.capacity, sizeof(ht_Header_Value));
 
     while (response.count > 0 && section != HT_SEC_END) {
         ht_sv chop = ht_sv_split_once(&response, '\n');
@@ -481,11 +489,13 @@ ht_message* ht_buffer_to_message(const char* buf, size_t buf_size)
             if (h->headers.count + 2 >= h->headers.capacity) {
                 h->headers.capacity *= 2;
                 h->headers.vals = (ht_Header_Value*)realloc(
-                    h->headers.vals, sizeof(ht_sv) * h->headers.capacity);
+                    h->headers.vals, sizeof(ht_Header_Value) * h->headers.capacity);
                 h->headers.keys = (ht_Header_Key*)realloc(
-                    h->headers.keys, sizeof(ht_sv) * h->headers.capacity);
+                    h->headers.keys, sizeof(ht_Header_Key) * h->headers.capacity);
             }
+            assert(key.count < MAX_HEADER_KEY_LEN && "Header key is too long.");
             memcpy(&h->headers.keys[h->headers.count].data, key.data, key.count);
+            assert(val.count < MAX_HEADER_VAL_LEN && "Header value is too long.");
             memcpy(&h->headers.vals[h->headers.count].data, val.data, val.count);
             h->headers.count++;
             break;
