@@ -108,6 +108,7 @@ bool ht_poll_fd(int fd, int timeout);
 char* ht_get_response_from_fd(int fd);
 ht_Message ht_message(const char* buf, size_t buf_size);
 void ht_add_custom_header(const char* key, const char* value);
+void ht_clean_custom_headers(void);
 void ht_close_all(void);
 void ht_free(ht_Message ht);
 
@@ -221,12 +222,16 @@ ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t)
 static char __ht_custom_headers[MAX_CUSTOM_HEADER_LENGTH];
 void ht_add_custom_header(const char* key, const char* value)
 {
-    assert(strlen(key) + strlen(value) + 5 < MAX_CUSTOM_HEADER_LENGTH
+    assert(strlen(__ht_custom_headers) + strlen(key) + strlen(value) + 5 < MAX_CUSTOM_HEADER_LENGTH
         && "Custom header length is too long!");
     strcat(__ht_custom_headers, key);
     strcat(__ht_custom_headers, ": ");
     strcat(__ht_custom_headers, value);
     strcat(__ht_custom_headers, "\r\n");
+}
+
+void ht_clean_custom_headers(void){
+    memset(__ht_custom_headers, 0, MAX_CUSTOM_HEADER_LENGTH);
 }
 
 const char* ht_build_request_data(HTTP_TYPE type, const char* resource, const char* data)
