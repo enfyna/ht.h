@@ -44,6 +44,18 @@
 #define MAX_FD 4
 #endif
 
+#ifndef HT_MALLOC
+#define HT_MALLOC malloc
+#endif
+
+#ifndef HT_CALLOC
+#define HT_CALLOC calloc
+#endif
+
+#ifndef HT_REALLOC
+#define HT_REALLOC realloc
+#endif
+
 typedef enum {
     HT_GET,
     HT_POST,
@@ -433,13 +445,13 @@ char* ht_get_response_from_fd(int fd)
 {
     size_t total_read = 0;
     size_t buf_size = 1024;
-    char* buf = malloc(buf_size);
+    char* buf = HT_MALLOC(buf_size);
     while (true) {
         size_t current_read = read(fd, buf + total_read, buf_size - total_read);
         total_read += current_read;
         if (total_read == buf_size) {
             buf_size *= 2;
-            buf = realloc(buf, sizeof(char) * buf_size);
+            buf = HT_REALLOC(buf, sizeof(char) * buf_size);
         } else {
             break;
         }
@@ -475,8 +487,8 @@ ht_Message ht_message(const char* buf, size_t buf_size)
     ht_Message h;
     h.headers.count = 0;
     h.headers.capacity = 8;
-    h.headers.keys = (ht_Header_Key*)calloc(h.headers.capacity, sizeof(ht_Header_Key));
-    h.headers.vals = (ht_Header_Value*)calloc(h.headers.capacity, sizeof(ht_Header_Value));
+    h.headers.keys = (ht_Header_Key*)HT_CALLOC(h.headers.capacity, sizeof(ht_Header_Key));
+    h.headers.vals = (ht_Header_Value*)HT_CALLOC(h.headers.capacity, sizeof(ht_Header_Value));
     memset(h.body, 0, MAX_HTTP_BODY_LEN);
 
     while (response.count > 0 && section != HT_SEC_END) {
@@ -506,9 +518,9 @@ ht_Message ht_message(const char* buf, size_t buf_size)
             ht_sv val = ht_sv_trim(chop);
             if (h.headers.count + 2 >= h.headers.capacity) {
                 h.headers.capacity *= 2;
-                h.headers.vals = (ht_Header_Value*)realloc(
+                h.headers.vals = (ht_Header_Value*)HT_REALLOC(
                     h.headers.vals, sizeof(ht_Header_Value) * h.headers.capacity);
-                h.headers.keys = (ht_Header_Key*)realloc(
+                h.headers.keys = (ht_Header_Key*)HT_REALLOC(
                     h.headers.keys, sizeof(ht_Header_Key) * h.headers.capacity);
             }
             assert(key.count < MAX_HEADER_KEY_LEN && "Header key is too long.");
