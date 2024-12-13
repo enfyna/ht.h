@@ -1,4 +1,4 @@
-CFLAGS=-Wall -Wextra -fsanitize=address -ggdb -pedantic
+CFLAGS=-Wall -Wextra -O0 -fsanitize=address,undefined,leak,integer -ggdb -pedantic
 
 default: main
 

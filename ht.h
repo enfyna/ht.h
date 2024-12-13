@@ -70,9 +70,9 @@ typedef enum {
 } HTTP_SECTION;
 
 typedef enum {
-    HT_ERR_CONNECTION,
-    HT_ERR_HOST,
-    HT_ERR_SOCKET,
+    HT_ERR_CONNECTION = -1,
+    HT_ERR_HOST = -3,
+    HT_ERR_SOCKET = -2,
 } HT_ERR;
 
 typedef struct {
@@ -223,6 +223,8 @@ ht_Status_Line ht_status_line(ht_sv v, ht_sv c, ht_sv t)
     v = ht_sv_trim(v);
     c = ht_sv_trim(c);
     t = ht_sv_trim(t);
+    assert(v.count < MAX_VERSION_LEN);
+    assert(t.count < MAX_STATUS_TEXT_LEN);
     memcpy(&st.version, v.data, v.count);
     memcpy(&st.status, t.data, t.count);
     st.version[v.count] = '\0';
@@ -316,6 +318,7 @@ int ht_init(void)
     __ht_epoll_fd = epoll_create1(0);
     if (__ht_epoll_fd == -1) {
         printf("ERROR: Couldn't create epoll instance!\n");
+        return HT_ERR_SOCKET;
     }
     printf("INFO: Created epoll instance with fd = %d !\n", __ht_epoll_fd);
     return __ht_epoll_fd;
@@ -355,7 +358,7 @@ ht_Snapshot ht_snapshot(void)
 
 int ht_send(const char* request)
 {
-    int fd;
+    int fd = -1;
     if (__ht_available_fd_count > 0) {
         fd = __ht_available_fd[--__ht_available_fd_count];
         int error = 0;
@@ -363,13 +366,16 @@ int ht_send(const char* request)
         int retval = getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len);
         if (retval != 0) {
             fprintf(stderr, "ERROR: Socket error retval: %s\n", strerror(retval));
-            return -1;
+            close(fd);
+            fd = -1;
         }
         if (error != 0) {
             fprintf(stderr, "ERROR: Socket error error: %s\n", strerror(error));
-            return -1;
+            close(fd);
+            fd = -1;
         }
-    } else {
+    }
+    if (fd == -1) {
         static struct sockaddr_in serv_addr;
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(PORT);
@@ -377,24 +383,24 @@ int ht_send(const char* request)
         struct hostent* host_entry = gethostbyname(HOST);
         if (host_entry == NULL) {
             printf("\nERROR:  Host entry error \n");
-            return -1;
+            return HT_ERR_HOST;
         }
 
         if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
             printf("\nERROR:  Socket creation error \n");
-            return -1;
+            return HT_ERR_SOCKET;
         }
 
         const char* ip_buff = inet_ntoa(*((struct in_addr*)host_entry->h_addr_list[0]));
         if (inet_pton(AF_INET, ip_buff, &serv_addr.sin_addr) <= 0) {
             printf("\nERROR: Invalid address/ Address not supported \n");
-            return -1;
+            return HT_ERR_SOCKET;
         }
 
         int status;
         if ((status = connect(fd, (struct sockaddr*)&serv_addr, sizeof(serv_addr))) < 0) {
             printf("\nERROR: Connection Failed : %d\n", status);
-            return -1;
+            return HT_ERR_CONNECTION;
         }
     }
 
@@ -457,6 +463,7 @@ char* ht_get_response_from_fd(int fd)
         }
     }
     buf[total_read] = '\0';
+    printf("INFO: Received message with length = %zu from fd = %d.\n", total_read, fd);
 
     if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
         __ht_listened_files -= 1;
