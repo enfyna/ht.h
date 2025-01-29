@@ -25,7 +25,7 @@
 #endif
 
 #ifndef MAX_HEADER_VAL_LEN
-#define MAX_HEADER_VAL_LEN 128
+#define MAX_HEADER_VAL_LEN 64
 #endif
 
 #ifndef MAX_HTTP_BODY_LEN
@@ -83,10 +83,11 @@ typedef struct {
     char data[MAX_HEADER_VAL_LEN];
 } ht_Header_Value;
 
+#define MAX_HEADER_CAP 8
+
 typedef struct {
-    ht_Header_Key* keys;
-    ht_Header_Value* vals;
-    int capacity;
+    ht_Header_Key keys[MAX_HEADER_CAP];
+    ht_Header_Value vals[MAX_HEADER_CAP];
     int count;
 } ht_headers;
 
@@ -119,6 +120,7 @@ ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
 char* ht_get_response_from_fd(int fd);
 ht_Message ht_message(const char* buf, size_t buf_size);
+ht_Message ht_get_message_from_fd(int fd);
 void ht_add_custom_header(const char* key, const char* value);
 void ht_clean_custom_headers(void);
 void ht_close_all(void);
@@ -451,18 +453,18 @@ char* ht_get_response_from_fd(int fd)
 {
     size_t total_read = 0;
     size_t buf_size = 1024;
-    char* buf = HT_MALLOC(buf_size);
+    char* buf = (char*)HT_MALLOC(buf_size);
     while (true) {
         size_t current_read = read(fd, buf + total_read, buf_size - total_read);
         total_read += current_read;
         if (total_read == buf_size) {
             buf_size *= 2;
-            buf = HT_REALLOC(buf, sizeof(char) * buf_size);
+            buf = (char*)HT_REALLOC(buf, sizeof(char) * buf_size);
         } else {
             break;
         }
     }
-    buf[total_read] = '\0';
+    buf[++total_read] = '\0';
     printf("INFO: Received message with length = %zu from fd = %d.\n", total_read, fd);
 
     if (epoll_ctl(__ht_epoll_fd, EPOLL_CTL_DEL, fd, NULL) == 0) {
@@ -493,9 +495,6 @@ ht_Message ht_message(const char* buf, size_t buf_size)
 
     ht_Message h;
     h.headers.count = 0;
-    h.headers.capacity = 8;
-    h.headers.keys = (ht_Header_Key*)HT_CALLOC(h.headers.capacity, sizeof(ht_Header_Key));
-    h.headers.vals = (ht_Header_Value*)HT_CALLOC(h.headers.capacity, sizeof(ht_Header_Value));
     memset(h.body, 0, MAX_HTTP_BODY_LEN);
 
     while (response.count > 0 && section != HT_SEC_END) {
@@ -523,16 +522,15 @@ ht_Message ht_message(const char* buf, size_t buf_size)
             }
             ht_sv key = ht_sv_split_once(&chop, ':');
             ht_sv val = ht_sv_trim(chop);
-            if (h.headers.count + 2 >= h.headers.capacity) {
-                h.headers.capacity *= 2;
-                h.headers.vals = (ht_Header_Value*)HT_REALLOC(
-                    h.headers.vals, sizeof(ht_Header_Value) * h.headers.capacity);
-                h.headers.keys = (ht_Header_Key*)HT_REALLOC(
-                    h.headers.keys, sizeof(ht_Header_Key) * h.headers.capacity);
+            if (h.headers.count >= MAX_HEADER_CAP) {
+                printf("[ERROR] Exceeding max header capacity! Skipping this header: %.*s: %.*s", key.count, key.data, val.count, val.data);
+                break;
             }
             assert(key.count < MAX_HEADER_KEY_LEN && "Header key is too long.");
+            memset(&h.headers.keys[h.headers.count].data, 0, MAX_HEADER_KEY_LEN);
             memcpy(&h.headers.keys[h.headers.count].data, key.data, key.count);
             assert(val.count < MAX_HEADER_VAL_LEN && "Header value is too long.");
+            memset(&h.headers.vals[h.headers.count].data, 0, MAX_HEADER_VAL_LEN);
             memcpy(&h.headers.vals[h.headers.count].data, val.data, val.count);
             h.headers.count++;
             break;
@@ -572,10 +570,11 @@ ht_Message ht_message(const char* buf, size_t buf_size)
     return h;
 }
 
-void ht_free(ht_Message ht)
-{
-    free(ht.headers.keys);
-    free(ht.headers.vals);
+ht_Message ht_get_message_from_fd(int fd){
+    char* res = ht_get_response_from_fd(fd);
+    ht_Message htm = ht_message(res, strlen(res));
+    free(res);
+    return htm;
 }
 
 void ht_close_all(void)
