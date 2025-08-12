@@ -118,9 +118,9 @@ int ht_init(void);
 int ht_send(const char* request);
 ht_active_events ht_poll(int timeout);
 bool ht_poll_fd(int fd, int timeout);
-char* ht_get_response_from_fd(int fd);
+char* ht_response_from_fd(int fd);
 ht_Message ht_message(const char* buf, size_t buf_size);
-ht_Message ht_get_message_from_fd(int fd);
+ht_Message ht_message_from_fd(int fd);
 void ht_add_custom_header(const char* key, const char* value);
 void ht_clean_custom_headers(void);
 void ht_close_all(void);
@@ -246,7 +246,8 @@ void ht_add_custom_header(const char* key, const char* value)
     strcat(__ht_custom_headers, "\r\n");
 }
 
-void ht_clean_custom_headers(void){
+void ht_clean_custom_headers(void)
+{
     memset(__ht_custom_headers, 0, MAX_CUSTOM_HEADER_LENGTH);
 }
 
@@ -449,7 +450,7 @@ ht_active_events ht_poll(int timeout)
     return res;
 }
 
-char* ht_get_response_from_fd(int fd)
+char* ht_response_from_fd(int fd)
 {
     size_t total_read = 0;
     size_t buf_size = 1024;
@@ -523,7 +524,7 @@ ht_Message ht_message(const char* buf, size_t buf_size)
             ht_sv key = ht_sv_split_once(&chop, ':');
             ht_sv val = ht_sv_trim(chop);
             if (h.headers.count >= MAX_HEADER_CAP) {
-                printf("[ERROR] Exceeding max header capacity! Skipping this header: %.*s: %.*s", key.count, key.data, val.count, val.data);
+                printf("[ERROR] Exceeding max header capacity! Skipping this header: %.*s: %.*s", (int)key.count, key.data, (int)val.count, val.data);
                 break;
             }
             assert(key.count < MAX_HEADER_KEY_LEN && "Header key is too long.");
@@ -570,8 +571,9 @@ ht_Message ht_message(const char* buf, size_t buf_size)
     return h;
 }
 
-ht_Message ht_get_message_from_fd(int fd){
-    char* res = ht_get_response_from_fd(fd);
+ht_Message ht_message_from_fd(int fd)
+{
+    char* res = ht_response_from_fd(fd);
     ht_Message htm = ht_message(res, strlen(res));
     free(res);
     return htm;
